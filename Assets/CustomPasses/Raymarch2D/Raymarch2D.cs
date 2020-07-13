@@ -7,7 +7,7 @@ using UnityEngine.Profiling;
 class Raymarch2D : CustomPass
 {
     public LayerMask cloudLayer = 0;
-    public Light sunLight;
+    public HDAdditionalLightData sunLight;
     [Min(1.0f)]
     public float ThicknessScale = 150.0f;
     [Range(0.1f, 100.0f)]
@@ -23,18 +23,24 @@ class Raymarch2D : CustomPass
 
     static class ShaderID
     {
-        public static readonly int _BlitTexture = Shader.PropertyToID("_BlitTexture");
-        public static readonly int _BlitScaleBias = Shader.PropertyToID("_BlitScaleBias");
-        public static readonly int _BlitMipLevel = Shader.PropertyToID("_BlitMipLevel");
-        public static readonly int _Radius = Shader.PropertyToID("_Radius");
         public static readonly int _Source = Shader.PropertyToID("_Source");
-        public static readonly int _ColorBufferCopy = Shader.PropertyToID("_ColorBufferCopy");
+        public static readonly int _SourceHalfRes = Shader.PropertyToID("_SourceHalfRes");
         public static readonly int _LightBuffer = Shader.PropertyToID("_LightBuffer");
-        public static readonly int _MaskDepth = Shader.PropertyToID("_MaskDepth");
-        public static readonly int _InvertMask = Shader.PropertyToID("_InvertMask");
+
         public static readonly int _ViewPortSize = Shader.PropertyToID("_ViewPortSize");
+
         public static readonly int _ThicknessScale = Shader.PropertyToID("_ThicknessScale");
         public static readonly int _ThicknessSoftKnee = Shader.PropertyToID("_ThicknessSoftKnee");
+
+        public static readonly int _Sunlight = Shader.PropertyToID("_Sunlight");
+        public static readonly int _SunDirection = Shader.PropertyToID("_SunDirection");
+
+        public static readonly int _ViewDirTopLeft = Shader.PropertyToID("_ViewDirTopLeft");
+        public static readonly int _ViewDirTopRight = Shader.PropertyToID("_ViewDirTopRight"); 
+        public static readonly int _ViewDirBtmLeft = Shader.PropertyToID("_ViewDirBtmLeft"); 
+        public static readonly int _ViewDirBtmRight = Shader.PropertyToID("_ViewDirTopRight");
+
+
     }
 
     // It can be used to configure render targets and their clear state. Also to create temporary render target textures.
@@ -59,13 +65,13 @@ class Raymarch2D : CustomPass
         );
 
         cloudBufferHalfRes = RTHandles.Alloc(
-            Vector2.one * 0.5f, TextureXR.slices, dimension: TextureXR.dimension,
+            Vector2.one * 0.25f, TextureXR.slices, dimension: TextureXR.dimension,
             colorFormat: GraphicsFormat.R16_SFloat, // We only need a 1 channel mask to composite the blur and color buffer copy
             useDynamicScale: true, name: "Cloud Mask (¼res)"
         );
 
         lightBuffer = RTHandles.Alloc(
-            Vector2.one * 0.5f, TextureXR.slices, dimension: TextureXR.dimension,
+            Vector2.one * 0.25f, TextureXR.slices, dimension: TextureXR.dimension,
             colorFormat: GraphicsFormat.R16G16B16A16_SFloat, 
             useDynamicScale: true, name: "Light Buffer (¼res)"
         );
@@ -131,12 +137,26 @@ class Raymarch2D : CustomPass
         else
             GetCustomBuffers(out source, out _);
 
+        var compositingProperties = new MaterialPropertyBlock();
 
-        
+        using (new ProfilingScope(cmd, new ProfilingSampler("Downsample Thickness")))
+        {
+            HDUtils.BlitCameraTexture(cmd, cloudBuffer, cloudBufferHalfRes, 0);
+        }
 
+        using (new ProfilingScope(cmd, new ProfilingSampler("Resolve Lighting")))
+        {
+            compositingProperties.SetColor(ShaderID._Sunlight, sunLight.color * sunLight.intensity);
+            compositingProperties.SetFloat(ShaderID._ThicknessScale, ThicknessScale);
+            compositingProperties.SetTexture(ShaderID._SourceHalfRes, cloudBufferHalfRes);
+
+            SetViewPortSize(cmd, compositingProperties, lightBuffer);
+            HDUtils.DrawFullScreen(cmd, cloudMaterial, lightBuffer, compositingProperties, 1);
+        }
+
+        // Composite Final Image
         using (new ProfilingScope(cmd, new ProfilingSampler("Resolve Clouds")))
         {
-            var compositingProperties = new MaterialPropertyBlock();
             compositingProperties.SetTexture(ShaderID._Source, cloudBuffer);
             compositingProperties.SetTexture(ShaderID._LightBuffer, lightBuffer);
             compositingProperties.SetFloat(ShaderID._ThicknessScale, ThicknessScale);

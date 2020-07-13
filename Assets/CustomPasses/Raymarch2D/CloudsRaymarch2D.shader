@@ -33,11 +33,13 @@
 		// you can check them out in the source code of the core SRP package.
 
 	TEXTURE2D_X(_Source);
+	TEXTURE2D_X_HALF(_SourceHalfRes);
 	TEXTURE2D_X_HALF(_LightBuffer);
 
 	float4 _ViewPortSize; // We need the viewport size because we have a non fullscreen render target (blur buffers are downsampled in half res)
 	float _ThicknessScale;
 	float _ThicknessSoftKnee;
+	float4 _Sunlight;
 
 
 #pragma enable_d3d11_debug_symbols
@@ -49,37 +51,73 @@
 		return uv;
 	}
 
-	float GetOpacity(float thickness)
+	float IntegrateOpacity(float thickness)
 	{
 		return pow(1.0-(1.0/(_ThicknessScale *thickness + 1)), _ThicknessSoftKnee);
 	}
 
-
-	float2 GetSampleUVs(Varyings varyings)
+	float2 GetSampleUVs(Varyings varyings, float2 offset)
 	{
 		float depth = LoadCameraDepth(varyings.positionCS.xy);
 		PositionInputs posInput = GetPositionInput(varyings.positionCS.xy, _ViewPortSize.zw, depth, UNITY_MATRIX_I_VP, UNITY_MATRIX_V);
-		return posInput.positionNDC.xy * _RTHandleScale.xy;
+		return (posInput.positionNDC.xy * _RTHandleScale.xy) + offset;
 	}
 
-	float4 ApplyClouds(Varyings varyings) : SV_Target
+	float2 GetSampleUVs(Varyings varyings)
 	{
-		float depth = LoadCameraDepth(varyings.positionCS.xy);
+		return GetSampleUVs(varyings, float2(0, 0));
+	}
+
+	float4 RenderClouds(Varyings varyings) : SV_Target
+	{
 		float2 uv = ClampUVs(GetSampleUVs(varyings));
 
 		float cloudMask = SAMPLE_TEXTURE2D_X_LOD(_Source, s_linear_clamp_sampler, uv, 0).r;
 		float3 light = SAMPLE_TEXTURE2D_X_LOD(_LightBuffer, s_linear_clamp_sampler, uv, 0).rgb;
 
-		return float4(light, GetOpacity(cloudMask));
+		return float4(light * GetCurrentExposureMultiplier(), IntegrateOpacity(cloudMask));
 	}
 
-		ENDHLSL
+#define ITERATIONS 16
+
+	float3 IntegrateLighting(Varyings varyings, float3 lightDirection, float3 light)
+	{
+		float depth = LoadCameraDepth(varyings.positionCS.xy);
+
+		float2 uv = ClampUVs(GetSampleUVs(varyings));
+		float d = SAMPLE_TEXTURE2D_X_LOD(_SourceHalfRes, s_linear_clamp_sampler, uv, 0).r;
+		
+		int i = 1;
+		float t = 1.0f;
+
+		while (i <= ITERATIONS)
+		{
+			float3 uvw = lightDirection * ((float)i / ITERATIONS);
+			uv = ClampUVs(GetSampleUVs(varyings, uvw.xy));
+			d = SAMPLE_TEXTURE2D_X_LOD(_SourceHalfRes, s_linear_clamp_sampler, uv, 0).r;
+
+			if (_ThicknessScale * d > abs(uvw.z))
+				t *= 0.5;
+
+			i++;
+		}
+
+		return t * light;
+	}
+
+	float4 ComputeLighting(Varyings varyings) : SV_Target
+	{
+		float3 direction = float3(0.07,0.07,0.00);
+		return float4(IntegrateLighting(varyings, direction, _Sunlight.xyz * GetCurrentExposureMultiplier()), 1);
+	}
+
+	ENDHLSL
 
 	SubShader
 	{
 		Pass
 		{
-			Name "Apply Clouds"
+			Name "Render Clouds"
 
 			ZWrite Off
 			ZTest Always
@@ -87,11 +125,24 @@
 			Cull Off
 
 			HLSLPROGRAM
-				#pragma fragment ApplyClouds
+				#pragma fragment RenderClouds
 			ENDHLSL
 		}
 
+		Pass
+		{
+			Name "Compute Lighting"
 
+			ZWrite Off
+			ZTest Always
+			Blend SrcAlpha OneMinusSrcAlpha
+			Cull Off
+
+			HLSLPROGRAM
+				#pragma fragment ComputeLighting
+			ENDHLSL
+		}
 	}
+
 	Fallback Off
 }
