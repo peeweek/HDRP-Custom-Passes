@@ -149,7 +149,7 @@ class Raymarch2D : CustomPass
             compositingProperties.SetColor(ShaderID._Sunlight, sunLight.color * sunLight.intensity);
             compositingProperties.SetFloat(ShaderID._ThicknessScale, ThicknessScale);
             compositingProperties.SetTexture(ShaderID._SourceHalfRes, cloudBufferHalfRes);
-
+            compositingProperties.SetVector(ShaderID._SunDirection, sunLight.transform.forward);
             SetViewPortSize(cmd, compositingProperties, lightBuffer);
             HDUtils.DrawFullScreen(cmd, cloudMaterial, lightBuffer, compositingProperties, 1);
         }

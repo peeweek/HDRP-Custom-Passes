@@ -40,6 +40,7 @@
 	float _ThicknessScale;
 	float _ThicknessSoftKnee;
 	float4 _Sunlight;
+	float3 _SunDirection;
 
 
 #pragma enable_d3d11_debug_symbols
@@ -70,35 +71,38 @@
 
 	float4 RenderClouds(Varyings varyings) : SV_Target
 	{
+		float depth = LinearEyeDepth(LoadCameraDepth(varyings.positionCS.xy), _ZBufferParams);
+		float alpha = depth < (1.0 / _ZBufferParams.w - 10) ? 0.0 : 1.0;
+
+
 		float2 uv = ClampUVs(GetSampleUVs(varyings));
 
 		float cloudMask = SAMPLE_TEXTURE2D_X_LOD(_Source, s_linear_clamp_sampler, uv, 0).r;
 		float3 light = SAMPLE_TEXTURE2D_X_LOD(_LightBuffer, s_linear_clamp_sampler, uv, 0).rgb;
 
-		return float4(light * GetCurrentExposureMultiplier(), IntegrateOpacity(cloudMask));
+		return float4(light, alpha * IntegrateOpacity(cloudMask));
 	}
 
-#define ITERATIONS 16
+#define ITERATIONS 64
 
 	float3 IntegrateLighting(Varyings varyings, float3 lightDirection, float3 light)
 	{
-		float depth = LoadCameraDepth(varyings.positionCS.xy);
-
+		// Iterate in View Space
+		lightDirection *= 0.1;
 		float2 uv = ClampUVs(GetSampleUVs(varyings));
 		float d = SAMPLE_TEXTURE2D_X_LOD(_SourceHalfRes, s_linear_clamp_sampler, uv, 0).r;
 		
 		int i = 1;
 		float t = 1.0f;
 
-		while (i <= ITERATIONS)
+		while (i <= ITERATIONS && t > 0)
 		{
 			float3 uvw = lightDirection * ((float)i / ITERATIONS);
-			uv = ClampUVs(GetSampleUVs(varyings, uvw.xy));
+			uv = ClampUVs(GetSampleUVs(varyings, -uvw.xy));
 			d = SAMPLE_TEXTURE2D_X_LOD(_SourceHalfRes, s_linear_clamp_sampler, uv, 0).r;
 
-			if (_ThicknessScale * d > abs(uvw.z))
-				t *= 0.5;
-
+			if (d * _ThicknessScale > abs(uvw.z))
+				t -= ((float)1 / ITERATIONS);
 			i++;
 		}
 
@@ -106,9 +110,17 @@
 	}
 
 	float4 ComputeLighting(Varyings varyings) : SV_Target
-	{
-		float3 direction = float3(0.07,0.07,0.00);
-		return float4(IntegrateLighting(varyings, direction, _Sunlight.xyz * GetCurrentExposureMultiplier()), 1);
+	{	
+		float3 worldPos = GetAbsolutePositionWS(GetCurrentViewPosition());
+		PositionInputs posInput = GetPositionInput(varyings.positionCS.xy, _ViewPortSize.zw, 1, UNITY_MATRIX_I_VP, UNITY_MATRIX_V);
+
+		float3 pxlPos = worldPos + GetWorldSpaceNormalizeViewDir(posInput.positionWS);
+		float3 sunPos = worldPos + _SunDirection;
+
+		float3 direction = TransformWorldToViewDir(normalize(sunPos - pxlPos)); 
+		direction.z /= 10;
+		direction = normalize(direction);
+		return float4(IntegrateLighting(varyings, direction , 1), 1);
 	}
 
 	ENDHLSL
